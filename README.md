@@ -515,6 +515,65 @@ Without any of this, an APK can still be installed with `termux-open app.apk` an
 3. Start in a project folder, e.g. `cd /sdcard/<project>` inside Debian before `claude`
    (or `proot-distro login debian` and then `cd`).
 
+## Phone keyboard: Termux extra keys for Claude Code (tested on the S24 Ultra)
+A phone keyboard has no Shift+Tab, Ctrl+Enter or Alt. `termux/extra-keys.snippet` goes into `~/.termux/termux.properties`
+(then `termux-reload-settings`). It adds ONE row of 7 buttons on top and leaves Termux's default two rows untouched:
+`mode` `sendf` `newln` `think` `transcr` `todos` `fast`.
+
+| Button | Sends | Claude Code action |
+|---|---|---|
+| mode | Alt+M | `chat:cycleMode` (permission modes), bound in `claude/keybindings.json` because Shift+Tab does not exist on a touch keyboard |
+| sendf | Alt+S | `chat:sendNow` (send queued messages + draft right away), bound in `claude/keybindings.json` |
+| newln | Ctrl+J | `chat:newline` (line break without sending) |
+| think | Alt+T | `chat:thinkingToggle` |
+| transcr | Ctrl+O | `app:toggleTranscript` |
+| todos | Ctrl+T | `app:toggleTodos` (shows nothing when Claude has no checklist) |
+| fast | Alt+O | `chat:fastMode` (may do nothing on models without fast mode) |
+
+Lessons (tested):
+- **Multi-key chords in a macro are unreliable.** `{macro: "CTRL X CTRL S"}` (the documented `sendNow` chord) and `CTRL X ENTER` (`queueSubmit`)
+  did not work; the second one either sent or did nothing. One modifier + one key (`ALT s`, `CTRL j`) works. So rebind chords to a single
+  `meta+<key>` in `~/.claude/keybindings.json` (copy `claude/keybindings.json`; changes apply live) and send that key from the button.
+- **No queue button needed:** Enter while Claude works already queues. `Up` (already in Termux's default row) takes the queued
+  messages back into the input box to edit; Enter queues them again.
+- Keep the Claude row at 7 keys or fewer and labels short (`sendf`, `newln`), or the row overflows.
+- The extra-keys row is app-wide; Termux cannot show keys per program. A wrapper could swap `termux.properties` + run
+  `termux-reload-settings` on start/exit of `cc` (not done; it would also switch other tabs).
+
+## Bypass-permissions mode as a Shift+Tab option (needs two things as root)
+- `claude --allow-dangerously-skip-permissions` adds `bypassPermissions` to the mode cycle WITHOUT starting in it
+  (the option appears after `plan`; the first interactive start asks you to accept a warning dialog once).
+- **It stays hidden when Claude runs as root**, and the proot's user IS root (uid 0): Claude Code refuses bypass for root/sudo unless it
+  recognises a sandbox. Setting `IS_SANDBOX=1` tells it that, so the option appears. This deliberately overrides a safety check:
+  bypass removes permission prompts, so only enable it if you accept that the proot on a personal phone is not a real sandbox.
+- The flag must go where Claude is actually started. Here that is the `cc()` function in **Termux's** `~/.bashrc`
+  (it runs `proot-distro login debian -- ... exec claude`), NOT the proot's own `~/.bashrc`; editing only the latter changes nothing
+  when you start with `cc`. See `claude/cc-launcher.sh` (has `IS_SANDBOX=1` + the flag) and `claude/proot-bashrc-snippet.sh`
+  (the optional `claude()` wrapper inside the proot, flag only).
+- Only new sessions get it; a running session cannot switch into it. Policy files (`policy-limits.json`, `remote-settings.json`) did not block it.
+- Test without a model reply: `proot-distro login debian -- bash -c 'cd /tmp; /root/.local/bin/claude --allow-dangerously-skip-permissions -p "reply ok" 2>&1 | head -5'`
+  (an error about "root/sudo privileges" means the root check is the cause).
+
+## Wi-Fi vs mobile data: keep big jobs off the mobile plan (`bin/netcheck`, `bin/wifirun`, `bin/datagate`)
+Rule for Claude: minimise data. Estimate first (about 4 MB per song, 40-300 MB per album or video, GB for long videos). Anything of
+about 20 MB or more runs through the gate, in the background, and must be resumable (skip existing files; yt-dlp keeps `.part`):
+`python3 ~/bin/wifirun --est <MB> [--wait MIN] -- <cmd>` or `~/bin/datagate <MB> <cmd>`. Never run a bare yt-dlp for big downloads.
+- `netcheck` prints WIFI / MOBILE / UNKNOWN (exit 0 only for WIFI), 0.2 s, no data, no adb. It finds which interface owns the source IP of
+  the default route (ioctl SIOCGIFADDR): `wlan*` = Wi-Fi, `rmnet*` / `clat*` / `ccmni*` = mobile. Verified on Wi-Fi (wlan0) while
+  `rmnet_data*` was also up in the background, which is why "is an interface up" is not enough.
+- `wifirun` re-checks every 2 s DURING the job (it can start on Wi-Fi and move to mobile). Default `--mode restart` kills the process group
+  on mobile and relaunches the same command when Wi-Fi returns (worst case about 2 s of mobile leak).
+- **`--mode freeze` (SIGSTOP) does NOT work reliably inside proot** (ptrace swallows SIGSTOP; verified), so use restart + resumable commands.
+- Dead ends: `termux-wifi-*` and telephony (blocked in the Play build, needs adb); `termux-job-scheduler --network cellular|unmetered`
+  (fires whenever cellular merely exists); `/proc/net` and `/sys/class/net` (blocked in proot). Test hook: write WIFI or MOBILE to
+  `/data/data/com.termux/files/home/.netcheck_force` (delete afterwards).
+- Limit: another phone's hotspot also looks like WIFI. Paths in the scripts are the Termux home, because `~` differs between Termux and the proot.
+
+## Where things live (found while setting this up)
+- Termux home = `/data/data/com.termux/files/home` (seen from the proot at that same path); the proot's `/root` is separate.
+  `gh` is installed in Termux and its login lives in the Termux home (`HOME=/data/data/com.termux/files/home gh ...`), not in the proot's `/root`.
+- The command that starts Claude is the `cc()` function in Termux's `~/.bashrc`; the proot's `~/.bashrc` only matters for a manual `claude`.
+
 ## Not yet done / TODO in this guide
 - [x] Confirm install finishes and `claude --version` works (done, 2.1.318)
 - [ ] Login flow (OAuth link opened in phone browser, paste code back)

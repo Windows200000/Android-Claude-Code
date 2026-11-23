@@ -1,0 +1,3 @@
+#!/bin/bash
+# datagate <estimated_MB> <command...>  ==  wifirun --est <MB> -- <command...>   (Wi-Fi only, pauses on mobile data)
+est="$1"; shift; exec python3 /data/data/com.termux/files/home/bin/wifirun --est "$est" -- "$@"

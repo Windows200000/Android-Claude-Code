@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""netcheck: which network carries the phone's internet traffic right now?  Prints WIFI / MOBILE / UNKNOWN.
+Exit code 0 only for WIFI.  No adb, no Termux:API, sends no packets (a UDP 'connect' only asks the kernel for the route).
+It finds the interface that owns the source address of the default route:
+    wlan*, eth*, usb*, rndis*, ap*  -> WIFI   (anything that is not cellular)
+    rmnet*, ccmni*, clat*, v4-rmnet*, ... -> MOBILE
+(v4- prefix = 464XLAT on top of that link.)   NETCHECK_FORCE=WIFI|MOBILE overrides, for tests.
+Limit: a Wi-Fi that is itself another phone's hotspot also looks like WIFI."""
+import os, socket, fcntl, struct, sys
+def classify():
+    ff = "/data/data/com.termux/files/home/.netcheck_force"        # test hook (fixed path: ~ differs between Termux and the proot)
+    f = os.environ.get("NETCHECK_FORCE") or (open(ff).read().strip() if os.path.exists(ff) else "")
+    if f in ("WIFI", "MOBILE", "UNKNOWN"): return f
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("1.1.1.1", 80)); src = s.getsockname()[0]
+    except OSError: return "UNKNOWN"          # no route at all (airplane mode, no network)
+    owner = None
+    for _, n in socket.if_nameindex():
+        try:
+            a = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x8915, struct.pack("256s", n.encode()[:15]))[20:24])
+        except OSError: continue
+        if a == src: owner = n; break
+    if owner is None: return "UNKNOWN"
+    o = owner.lower().replace("v4-", "")
+    if o.startswith(("rmnet", "ccmni", "clat", "ppp", "wwan", "pdp", "seth", "ccemni")): return "MOBILE"
+    if o.startswith(("wlan", "eth", "usb", "rndis", "ap", "swlan", "p2p", "bt-pan")): return "WIFI"
+    return "UNKNOWN"
+if __name__ == "__main__":
+    r = classify(); print(r); sys.exit(0 if r == "WIFI" else 1)

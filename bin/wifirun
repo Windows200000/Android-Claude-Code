@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""wifirun [--est MB] [--wait MIN] [--poll SEC] -- command ...
+Run a data-hungry command only on Wi-Fi, and keep watching while it runs:
+  * start: if --est is below DATAGATE_MIN_MB (default 20) just run it. Otherwise wait for Wi-Fi, by default FOREVER
+    (never gives up, zero data used while waiting). --wait MIN caps the wait; --no-wait refuses at once with exit 3.
+  * during: every --poll seconds (default 2) check the network.
+      --mode restart (default): on mobile data the whole process group is stopped (SIGTERM, then SIGKILL) and the SAME command
+          is started again when Wi-Fi returns. The command must be resumable/idempotent (my yt-dlp scripts skip finished files and
+          yt-dlp continues .part files). Reliable everywhere.
+      --mode freeze: SIGSTOP/SIGCONT the group instead. Only for native Termux processes: inside the proot, ptrace can swallow
+          SIGSTOP, so it may NOT actually freeze there.
+    Worst case ~poll seconds of mobile traffic.
+  * exit code = the command's exit code (3 if it never got Wi-Fi in time)."""
+import argparse, os, signal, subprocess, sys, time
+import importlib.machinery, importlib.util
+_l = importlib.machinery.SourceFileLoader("netcheck", os.path.join(os.path.dirname(os.path.abspath(__file__)), "netcheck"))
+_m = importlib.util.module_from_spec(importlib.util.spec_from_loader("netcheck", _l)); _l.exec_module(_m)
+classify = _m.classify
+def say(m): print(f"[wifirun {time.strftime('%H:%M:%S')}] {m}", file=sys.stderr, flush=True)
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--est", type=float, default=1e9, help="estimated data in MB (default: assume big)")
+    ap.add_argument("--wait", type=float, default=None, help="max minutes to wait for Wi-Fi before starting (default: wait forever, never give up)")
+    ap.add_argument("--no-wait", action="store_true", help="refuse at once (exit 3) when not on Wi-Fi instead of waiting")
+    ap.add_argument("--poll", type=float, default=2.0); ap.add_argument("--mode", choices=["restart", "freeze"], default="restart")
+    ap.add_argument("cmd", nargs=argparse.REMAINDER)
+    a = ap.parse_args(); cmd = a.cmd[1:] if a.cmd[:1] == ["--"] else a.cmd
+    if not cmd: ap.error("no command")
+    if a.est < float(os.environ.get("DATAGATE_MIN_MB", 20)): os.execvp(cmd[0], cmd)
+    def wait_wifi(limit):
+        announced = False
+        while classify() != "WIFI":
+            if limit is not None and time.time() >= limit: return False
+            if not announced: say(f"waiting for Wi-Fi (now {classify()})..."); announced = True
+            time.sleep(max(a.poll, 2))
+        return True
+    limit = time.time() if a.no_wait else (None if a.wait is None else time.time() + a.wait * 60)
+    if not wait_wifi(limit):
+        say(f"PAUSED before start: ~{a.est:.0f} MB needs Wi-Fi (now {classify()}). No data used."); sys.exit(3)
+    def stop(p):
+        for sig in (signal.SIGCONT, signal.SIGTERM):
+            try: os.killpg(p.pid, sig)
+            except ProcessLookupError: return
+        for _ in range(20):
+            if p.poll() is not None: return
+            time.sleep(0.25)
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        p.wait()
+    runs = 0
+    while True:
+        runs += 1; p = subprocess.Popen(cmd, preexec_fn=os.setsid); frozen = False; interrupted = False
+        if runs > 1: say(f"relaunched (run {runs})")
+        try:
+            while p.poll() is None:
+                st = classify()
+                if st != "WIFI":
+                    if a.mode == "freeze" and not frozen:
+                        os.killpg(p.pid, signal.SIGSTOP); frozen = True; say(f"network is {st}: job FROZEN")
+                    elif a.mode == "restart":
+                        say(f"network is {st}: job STOPPED, will relaunch on Wi-Fi"); stop(p); interrupted = True; break
+                elif frozen:
+                    os.killpg(p.pid, signal.SIGCONT); frozen = False; say("Wi-Fi back: job RESUMED")
+                time.sleep(a.poll)
+        except KeyboardInterrupt:
+            stop(p); sys.exit(130)
+        if not interrupted: sys.exit(p.returncode)
+        wait_wifi(None)
+if __name__ == "__main__": main()
