@@ -25,7 +25,7 @@ Each option must say up front whether it needs the user's hands, so the answer i
 | 3 | Optional extras: pick any | **Termux:API** (clipboard, notifications, battery, camera, location, SMS... Claude can use them; installs one extra app; needs a one-time tap per Android permission you choose in Q4) / **Termux:GUI** (native UI from scripts; one extra app) / **Shizuku shell access** (see below) / **Termux:Boot** (autostart; one extra app) |
 | 4 | If Termux:API: which phone permissions may I grant it? | camera / location / SMS / contacts / call log / microphone (none by default; each is a privacy grant) |
 | 5 | Dev tools in the Linux? | **Minimal (recommended)**: git, curl, ripgrep only; Claude installs Node/Python/gcc later when a project needs it. / Add Node + Python now (~300 MB). Never default to build-essential/npm: it is slow and huge. |
-| 6 | Battery | **Exempt only Termux from battery optimization (recommended, reversible)** / skip. Never apply the global phantom-process fix unless sessions actually get killed. |
+| 6 | Battery | **Exempt only Termux from battery optimization (recommended, reversible)** / skip. Never apply the global phantom-process fix unless sessions actually get killed (see **HARD LIMIT: … 32 child processes**). |
 | 7 | Storage tight? | Offer to strip docs/locale/man/python after install (~70-110 MB) |
 
 **Shizuku** (explain in one sentence when offering): gives Termux commands the power of `adb shell` (silent app
@@ -45,6 +45,34 @@ install, `pm grant`, settings, reading other apps' data folders) without a PC. C
 - The user's own login to Claude is always theirs to do; never touch credentials.
 - Before typing into the phone: unlocked? `adb devices` says `device`? screenshot = plain shell prompt? (see rules below.)
 - If the user says "setup script" they mean **this document**.
+
+## HARD LIMIT: Android kills the whole session past 32 child processes (phantom process killer) — confirmed
+Android 12+ allows an app at most **32 "phantom" (child) processes**. For Termux *everything* counts: proot, Claude Code, every shell,
+adb, python, ffmpeg and **each process of a headless browser**. One process over the cap and Android kills them, the Claude session
+included, with no error message (the Termux pane may even survive, empty). Memory was NOT the cause: when this was confirmed, 2.4 GB
+were free, but 34 processes were running, 13 of them headless Firefox, and Android's log showed a burst of
+`ActivityManager: Process PhantomProcessRecord {... firefox-esr ...} died`.
+
+Rules for Claude:
+- **Budget processes.** Claude + proot + shells already use ~10-12. Keep everything else under ~15 at once (`pgrep -c .` to check).
+  One headless browser at a time, never two. No wide fan-outs (`xargs -P`, `parallel`, many background jobs); `-P 2-4` at most.
+- **Headless Firefox with few processes** (default ~13 → ~8). Put these in the test profile's `user.js`:
+  ```
+  user_pref("fission.autostart", false);            user_pref("dom.ipc.processCount", 1);
+  user_pref("dom.ipc.processCount.webIsolated", 1); user_pref("dom.ipc.processPrelaunch.enabled", false);
+  user_pref("dom.ipc.keepProcessesAlive.web", 0);    user_pref("network.process.enabled", false);
+  user_pref("extensions.webextensions.remote", false); user_pref("gfx.webrender.software", true);
+  user_pref("media.rdd-process.enabled", false);     user_pref("media.utility-process.enabled", false);
+  ```
+- **The real fix** (only with the user's OK, needs phone access, both reversible):
+  `adbsh 'device_config put activity_manager max_phantom_processes 2147483647'` (resets after a reboot) and
+  `adbsh 'settings put global settings_enable_monitor_phantom_procs false'` (Android 12L+, survives a reboot; this is also the
+  "Disable child process restrictions" switch in Developer options on some phones). Undo: `device_config delete activity_manager
+  max_phantom_processes` / `settings put global settings_enable_monitor_phantom_procs true`.
+- **Find out what killed a session: `bin/killwatch.py`** (stdlib Python flight recorder). `killwatch.py start` at the start of a session
+  (detached, one instance) samples memory, process counts per group and load every 2 s into `/sdcard/Download/killwatch/` (fsync'd,
+  so it survives the kill); with adb connected it also follows Android's log for lmkd / phantom / am_kill lines.
+  After a death, `killwatch.py report` prints the last samples, the kill lines and a verdict (low memory vs. too many processes).
 
 ## Big file transfers over flaky USB: pull in verified pieces (a plain `adb pull` of 17 GB died at 32%)
 `adb pull` aborts when adb drops (observed every ~0.6-2 GB on this setup, USB/driver flakiness, no phone lock involved), so a
@@ -572,6 +600,8 @@ about 20 MB or more runs through the gate, in the background, and must be resuma
 ## Where things live (found while setting this up)
 - Termux home = `/data/data/com.termux/files/home` (seen from the proot at that same path); the proot's `/root` is separate.
   `gh` is installed in Termux and its login lives in the Termux home (`HOME=/data/data/com.termux/files/home gh ...`), not in the proot's `/root`.
+  From inside the proot, use that login with `GH_CONFIG_DIR=/data/data/com.termux/files/home/.config/gh gh ...`; for `git clone/push`
+  of private repos also run `gh auth setup-git` once with that variable set.
 - The command that starts Claude is the `cc()` function in Termux's `~/.bashrc`; the proot's `~/.bashrc` only matters for a manual `claude`.
 
 ## Not yet done / TODO in this guide
@@ -580,8 +610,7 @@ about 20 MB or more runs through the gate, in the background, and must be resuma
 - [x] Storage: `/sdcard` visible inside Debian (verified)
 - [x] Cleanup of temp files / apt cache on the phone (done)
 - [ ] Decide whether to trim `build-essential`/npm to save space (asked user)
-- [ ] Optional: phantom-process (Android 12+) setting. Deliberately **not** applied: it is global (all apps),
-      only matters if long sessions get killed. Termux-only mitigations: `termux-wake-lock`, disable battery
-      optimization for Termux.
+- [x] Phantom-process cap: confirmed as the cause of killed sessions; see **HARD LIMIT** (process budget, low-process Firefox,
+      `killwatch.py`). The global setting is still only applied with the user's OK.
 - [ ] Optional extras: Termux:API, `adb tcpip 5555` for on-phone adb, sshd bridge
 - [ ] Final cleanup pass over this document
