@@ -72,6 +72,10 @@ Rules for Claude:
 - **Measure inside the page, not by polling from outside.** Driving a headless browser (Marionette/WebDriver) every 100-250 ms from a
   script costs so much CPU under proot that `<video>` playback dropped to 0.9x real time. Install a small recorder in the page
   (`setInterval` writing samples into an array) and fetch the array every few seconds.
+- **Never leave a browser behind.** A test killed by `timeout` skips its `finally`, and the headless browser it started keeps running
+  (found: two left over, eating ~40 % CPU for hours and quietly skewing every later timing measurement). Start the browser in its own
+  process group (`subprocess.Popen(..., start_new_session=True)`), close it with `os.killpg(pid, SIGTERM)`, register that with `atexit`
+  and turn SIGTERM/SIGHUP into `sys.exit()` so it also runs on a timeout. Check with `ps -eo pid,etime,comm | grep -i firefox`.
 - **The real fix** (only with the user's OK, needs phone access, both reversible):
   `adbsh 'device_config put activity_manager max_phantom_processes 2147483647'` (resets after a reboot) and
   `adbsh 'settings put global settings_enable_monitor_phantom_procs false'` (Android 12L+, survives a reboot; this is also the
