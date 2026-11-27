@@ -56,14 +56,15 @@ were free, but 34 processes were running, 13 of them headless Firefox, and Andro
 Rules for Claude:
 - **Budget processes.** Claude + proot + shells already use ~10-12. Keep everything else under ~15 at once (`pgrep -c .` to check).
   One headless browser at a time, never two. No wide fan-outs (`xargs -P`, `parallel`, many background jobs); `-P 2-4` at most.
-- **Headless Firefox with few processes** (default ~13 → ~8). Put these in the test profile's `user.js`:
+- **Headless Firefox with few processes** (default ~13 → ~9). Put these in the test profile's `user.js`:
   ```
   user_pref("fission.autostart", false);            user_pref("dom.ipc.processCount", 1);
   user_pref("dom.ipc.processCount.webIsolated", 1); user_pref("dom.ipc.processPrelaunch.enabled", false);
   user_pref("dom.ipc.keepProcessesAlive.web", 0);    user_pref("network.process.enabled", false);
   user_pref("extensions.webextensions.remote", false); user_pref("gfx.webrender.software", true);
-  user_pref("media.rdd-process.enabled", false);     user_pref("media.utility-process.enabled", false);
   ```
+  Do **not** also disable `media.rdd-process.enabled` / `media.utility-process.enabled`: that saves one more process, but then
+  `<video>` never loads at all (readyState stays 0, no error) — verified.
 - **The real fix** (only with the user's OK, needs phone access, both reversible):
   `adbsh 'device_config put activity_manager max_phantom_processes 2147483647'` (resets after a reboot) and
   `adbsh 'settings put global settings_enable_monitor_phantom_procs false'` (Android 12L+, survives a reboot; this is also the
