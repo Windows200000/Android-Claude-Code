@@ -65,6 +65,13 @@ Rules for Claude:
   ```
   Do **not** also disable `media.rdd-process.enabled` / `media.utility-process.enabled`: that saves one more process, but then
   `<video>` never loads at all (readyState stays 0, no error) — verified.
+- **Several browser "users" at once** (e.g. testing a multi-user web app): don't start several browsers. Use ONE headless Firefox with
+  one tab holding N same-origin `<iframe>`s; with the prefs above they share the single content process, so this costs no extra
+  processes, and each iframe is a fully independent page. On this phone two video players per browser are the practical limit; three
+  play slower than real time.
+- **Measure inside the page, not by polling from outside.** Driving a headless browser (Marionette/WebDriver) every 100-250 ms from a
+  script costs so much CPU under proot that `<video>` playback dropped to 0.9x real time. Install a small recorder in the page
+  (`setInterval` writing samples into an array) and fetch the array every few seconds.
 - **The real fix** (only with the user's OK, needs phone access, both reversible):
   `adbsh 'device_config put activity_manager max_phantom_processes 2147483647'` (resets after a reboot) and
   `adbsh 'settings put global settings_enable_monitor_phantom_procs false'` (Android 12L+, survives a reboot; this is also the
